@@ -1,0 +1,67 @@
+*** Begin Patch
+*** Update File: D:/agent/main.py
+@@
+-import os
+-import sys
+-import argparse
++import os
++import sys
++import argparse
++
++# Ensure UTF-8 output on terminals that support reconfigure
++if hasattr(sys.stdout, "reconfigure"):
++    sys.stdout.reconfigure(encoding="utf-8")
++if hasattr(sys.stderr, "reconfigure"):
++    sys.stderr.reconfigure(encoding="utf-8")
+ 
+*** End Patch
+
+*** Begin Patch
+*** Update File: D:/agent/main.py
+@@
+-    args = parser.parse_args()
++    args = parser.parse_args()
++    # Normalize whitespace in provided goal to avoid garbled spacing in some terminals
++    normalized_goal = ' '.join(args.goal.split()) if args.goal else ""
+*** End Patch
+
+*** Begin Patch
+*** Update File: D:/agent/main.py
+@@
+-    elif args.goal:
+-        print(f"작업 시작: {args.goal}")
+-        result = agent.run(args.goal)
++    elif args.goal:
++        print(f"작업 시작: {normalized_goal}")
++        result = agent.run(normalized_goal)
+*** End Patch
+
+*** Begin Patch
+*** Update File: D:/agent/core/agent.py
+@@
+-import uuid
+-from typing import Any
++import uuid
++import subprocess
++import sys
++from typing import Any
+@@
+-        elif action == "test":
++        elif action == "test":
+             test_command = details.get("query", "")
+             return self.tool_registry.execute("run_test", command=test_command)
++        elif action == "execute":
++            path = details.get("path", "")
++            cmd = details.get("command", "")
++            if not path:
++                return {"status": "error", "error": "No path provided for execute"}
++            try:
++                if cmd:
++                    cmd_args = cmd.split()
++                    completed = subprocess.run([sys.executable, path] + cmd_args, capture_output=True, text=True)
++                else:
++                    completed = subprocess.run([sys.executable, path], capture_output=True, text=True)
++                return {"status": "ok", "returncode": completed.returncode, "stdout": completed.stdout, "stderr": completed.stderr}
++            except Exception as e:
++                return {"status": "error", "error": str(e)}
+*** End Patch

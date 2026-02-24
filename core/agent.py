@@ -1,6 +1,7 @@
 import uuid
+import os
 from typing import Any
-from agent.core.state import AgentState, AgentStateData, Task
+from agent.core.state import AgentStateData, Task
 from agent.core.planner import Planner
 from agent.core.editor import Editor
 from agent.core.reflector import Reflector
@@ -10,104 +11,182 @@ from agent.context.context_builder import ContextBuilder
 
 
 class CodingAgent:
+
     def __init__(self, max_iterations: int = 10):
         self.state = AgentStateData(max_iterations=max_iterations)
         self.planner = Planner()
         self.editor = Editor()
         self.reflector = Reflector()
         self.tool_registry = ToolRegistry()
-        self.working_memory = WorkingMemory()
+        self.memory = WorkingMemory()
         self.context_builder = ContextBuilder()
-        self.action_history = []
+        self.history = []
+
+        # 🔥 최소 1파일 생성 보장 플래그
+        self.file_operation_success = False
+
+    # ==========================
+    # PUBLIC RUN
+    # ==========================
 
     def run(self, goal: str) -> dict[str, Any]:
-        task_id = str(uuid.uuid4())
-        task = Task(id=task_id, description=goal)
+
+        task = Task(id=str(uuid.uuid4()), description=goal)
         self.state.add_task(task)
-        
-        self._add_to_memory("user_goal", goal)
-        
+
+        self.memory.add("goal", goal)
+
+        # 🔥 매 실행마다 초기화
+        self.file_operation_success = False
+
         while not self.state.is_max_iterations_reached():
+
             self.state.increment_iteration()
-            
+
             context = self._build_context()
-            
-            self.state.update_state(AgentState.PLANNING)
+
             plan = self.planner.plan(goal, context)
+
+            print(f"\n[ITER {self.state.iteration}] PLAN:", plan)
             
-            self.action_history.append({"iteration": self.state.iteration, "plan": plan})
-            
-            self.state.update_state(AgentState.EXECUTING)
-            result = self._execute_action(plan, context)
-            
-            self._add_to_memory(f"action_{self.state.iteration}", result)
-            
-            self.state.update_state(AgentState.REFLECTING)
+            if plan.get("action") == "done" and "코드" in goal:
+                print("⚠ Planner 수정: 코딩 요청이므로 write_file 강제 전환")
+                plan = {
+                    "action": "write_file",
+                    "details": {
+                        "file_path": "output.py",
+                        "content": "print('Hello World')"
+                    }
+                }
+
+            result = self._execute(plan)
+
+            print(f"[ITER {self.state.iteration}] RESULT:", result)
+
             reflection = self.reflector.reflect(str(result), context)
-            
+
+            print(f"[ITER {self.state.iteration}] REFLECTION:", reflection)
+
+            # 🔒 DONE 강제 차단
             if reflection.get("next_action") == "done":
-                task.status = "completed"
-                task.completed_at = __import__("datetime").datetime.now()
-                task.result = result
-                self.state.update_state(AgentState.IDLE)
-                return {"status": "success", "result": result, "iterations": self.state.iteration}
-            
-            if reflection.get("next_action") == "retry":
-                continue
-                
-        task.status = "max_iterations"
-        task.error = "Maximum iterations reached"
-        self.state.update_state(AgentState.ERROR)
-        return {"status": "error", "error": "Max iterations reached", "iterations": self.state.iteration}
 
-    def _build_context(self) -> dict[str, Any]:
-        context = self.context_builder.build(
-            current_state=self.state.current_state,
-            task_history=self.state.task_history,
-            working_memory=self.working_memory.get_all(),
-            action_history=self.action_history
-        )
-        self.state.context = context
-        return context
+                if not self.file_operation_success:
+                    print("🚫 DONE 차단: 최소 1개 파일 생성/수정이 필요합니다.")
+                    continue
 
-    def _execute_action(self, plan: dict[str, Any], context: dict[str, Any]) -> Any:
-        action = plan.get("action", "done")
+                print("✅ DONE 허용: 파일 변경 확인됨")
+
+                return {
+                    "status": "success",
+                    "result": result,
+                    "iterations": self.state.iteration
+                }
+
+        return {
+            "status": "error",
+            "error": "Max iterations reached",
+            "iterations": self.state.iteration
+        }
+
+    # ==========================
+    # CONTEXT
+    # ==========================
+
+    def _build_context(self) -> dict:
+        files = self.tool_registry.execute("list_directory", path=".")
+        return {
+            "iteration": self.state.iteration,
+            "memory": self.memory.get_all(),
+            "files": files
+        }
+
+    # ==========================
+    # ACTION EXECUTION
+    # ==========================
+
+    def _execute(self, plan: dict) -> Any:
+
+        action = plan.get("action")
         details = plan.get("details", {})
-        
+
         if action == "search":
-            query = details.get("query", "")
-            return self.tool_registry.execute("web_search", query=query)
-        
-        elif action == "edit":
-            instruction = details.get("instruction", "")
-            file_content = details.get("file_content", "")
-            web_info = details.get("web_info", "")
-            return self.editor.edit(instruction, file_content, web_info)
-        
+            return self.tool_registry.execute(
+                "web_search",
+                query=details.get("query", "")
+            )
+
         elif action == "read_file":
-            file_path = details.get("query", "")
-            return self.tool_registry.execute("read_file", file_path=file_path)
-        
+            return self.tool_registry.execute(
+                "read_file",
+                file_path=details.get("file_path", "")
+            )
+
+        elif action == "edit":
+            return self._handle_edit(details)
+
         elif action == "write_file":
-            file_path = details.get("query", "")
-            content = details.get("content", "")
-            return self.tool_registry.execute("write_file", file_path=file_path, content=content)
-        
+            result = self.tool_registry.execute(
+                "write_file",
+                file_path=details.get("file_path", ""),
+                content=details.get("content", "")
+            )
+
+            # 🔥 성공 판정 조건 강화
+            if isinstance(result, dict) and not result.get("error"):
+                self.file_operation_success = True
+
+            return result
+
         elif action == "test":
-            test_command = details.get("query", "")
-            return self.tool_registry.execute("run_test", command=test_command)
-        
-        elif action == "reflect":
-            return self.reflector.reflect(str(context), context)
-        
-        else:
-            return {"status": "done", "message": "No action needed"}
+            return self.tool_registry.execute("run_tests")
 
-    def _add_to_memory(self, key: str, value: Any):
-        self.working_memory.add(key, value)
+        elif action == "done":
+            # 🔥 직접 done 호출도 차단
+            if not self.file_operation_success:
+                return {"error": "DONE blocked: no file created"}
+            return {"status": "done"}
 
-    def get_state(self) -> AgentStateData:
-        return self.state
+        return {"status": "unknown_action"}
 
-    def get_history(self) -> list[dict[str, Any]]:
-        return self.action_history
+    # ==========================
+    # EDIT HANDLER (안정화)
+    # ==========================
+
+    def _handle_edit(self, details: dict):
+
+        file_path = details.get("file_path")
+
+        if not file_path:
+            return {"error": "file_path missing"}
+
+        # 1️⃣ read
+        original = self.tool_registry.execute(
+            "read_file",
+            file_path=file_path
+        )
+
+        if isinstance(original, dict) and "error" in original:
+            return original
+
+        # 2️⃣ LLM edit
+        updated = self.editor.edit(
+            details.get("instruction", ""),
+            original,
+            details.get("web_info", "")
+        )
+
+        if not isinstance(updated, str):
+            return {"error": "LLM edit failed"}
+
+        # 3️⃣ write
+        write_result = self.tool_registry.execute(
+            "write_file",
+            file_path=file_path,
+            content=updated
+        )
+
+        # 🔥 성공 시만 인정
+        if isinstance(write_result, dict) and not write_result.get("error"):
+            self.file_operation_success = True
+
+        return write_result
