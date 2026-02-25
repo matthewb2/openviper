@@ -1,4 +1,5 @@
 import uuid
+import subprocess
 import os
 from typing import Any
 from agent.core.state import AgentStateData, Task
@@ -24,6 +25,7 @@ class CodingAgent:
 
         # 🔥 최소 1파일 생성 보장 플래그
         self.file_operation_success = False
+        self.last_goal: str = ""
 
     # ==========================
     # PUBLIC RUN
@@ -35,6 +37,7 @@ class CodingAgent:
         self.state.add_task(task)
 
         self.memory.add("goal", goal)
+        self.last_goal = goal
 
         # 🔥 매 실행마다 초기화
         self.file_operation_success = False
@@ -104,6 +107,74 @@ class CodingAgent:
     # ACTION EXECUTION
     # ==========================
 
+    def _extract_print_source(self, text: str) -> str | None:
+        """Extract print content from goal text."""
+        if not text:
+            return None
+        import re
+        m = re.search(r'"([^"]+)"', text)
+        if m:
+            return m.group(1)
+        m2 = re.search(r"'([^']+)'", text)
+        if m2:
+            return m2.group(1)
+        return None
+
+    def _generate_markdown_content(self, goal: str) -> str:
+        """Generate markdown content based on user goal."""
+        import re
+        
+        # Extract potential title from goal
+        # Look for patterns like "about X", "for X", "X를 위한"
+        title_match = re.search(r'(?:about|for|을 위한|에 대한)\s+(.+?)(?:\s|$)', goal, re.IGNORECASE)
+        if title_match:
+            title = title_match.group(1).strip()
+        else:
+            # Use first few words as title
+            title = "Project"
+        
+        # Extract description from goal
+        # Remove common patterns to get the core description
+        desc = goal
+        for pattern in [r'마크다운\s*문법\s*으로', r'readme\.?\s*파일\s*에', r'파일\s*을\s*만들', r'만들어\s*줘']:
+            desc = re.sub(pattern, '', desc, flags=re.IGNORECASE)
+        desc = desc.strip()
+        if not desc:
+            desc = "Project Description"
+        
+        # Generate markdown content
+        content = f"""# {title}
+
+## Overview
+
+{desc}
+
+## Installation
+
+```bash
+# Install dependencies
+pip install -r requirements.txt
+```
+
+## Usage
+
+```bash
+# Run the project
+python main.py
+```
+
+## Features
+
+- Feature 1
+- Feature 2
+- Feature 3
+
+## License
+
+MIT
+"""
+        return content
+
     def _execute(self, plan: dict) -> Any:
 
         action = plan.get("action")
@@ -125,10 +196,24 @@ class CodingAgent:
             return self._handle_edit(details)
 
         elif action == "write_file":
+            file_path = details.get("file_path", "output.py")
+            content = details.get("content", "")
+            
+            # If content is empty, generate based on file type and goal
+            if not content:
+                # Check if it's a markdown file (README.md, etc.)
+                if file_path.endswith('.md') or '마크다운' in self.last_goal or 'markdown' in self.last_goal.lower():
+                    content = self._generate_markdown_content(self.last_goal)
+                else:
+                    # Try to extract print content for Python files
+                    inferred = self._extract_print_source(self.last_goal)
+                    if inferred:
+                        content = f"print('{inferred}')\n"
+            
             result = self.tool_registry.execute(
                 "write_file",
-                file_path=details.get("file_path", ""),
-                content=details.get("content", "")
+                file_path=file_path,
+                content=content
             )
 
             # 🔥 성공 판정 조건 강화
@@ -145,6 +230,21 @@ class CodingAgent:
             if not self.file_operation_success:
                 return {"error": "DONE blocked: no file created"}
             return {"status": "done"}
+
+        elif action == "execute":
+            path = details.get("file_path", "")
+            cmd = details.get("command", "")
+            if not path:
+                return {"status": "error", "error": "No file_path provided for execute"}
+            try:
+                if cmd:
+                    cmd_args = cmd.split()
+                    completed = subprocess.run(["python", path] + cmd_args, capture_output=True, text=True)
+                else:
+                    completed = subprocess.run(["python", path], capture_output=True, text=True)
+                return {"status": "ok", "returncode": completed.returncode, "stdout": completed.stdout, "stderr": completed.stderr}
+            except Exception as e:
+                return {"status": "error", "error": str(e)}
 
         return {"status": "unknown_action"}
 
