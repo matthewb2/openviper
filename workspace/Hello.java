@@ -1,14 +1,6 @@
 public class Hello {
     public static void main(String[] args) {
-        int result = sum(1, 100);
+        int result = Sum.sum(1, 100);
         System.out.println("1부터 100까지 합계: " + result);
-    }
-    
-    public static int sum(int start, int end) {
-        int total = 0;
-        for (int i = start; i <= end; i++) {
-            total += i;
-        }
-        return total;
     }
 }

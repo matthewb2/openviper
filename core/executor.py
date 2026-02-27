@@ -1,175 +1,286 @@
 import subprocess
 import os
 import re
+import tempfile
+import difflib
+from typing import Optional, Dict, Any
 from config import llm_call
 
 
 class Executor:
-    """Execution handler for shell commands and file execution"""
 
     # ==============================
-    # File Execution
+    # PUBLIC FILE EXECUTION
     # ==============================
 
     @staticmethod
-    def execute_file(path: str, cmd: str = "") -> dict:
+    def execute_file(
+        path: str,
+        cmd: str = "",
+        context: Optional[dict] = None
+    ) -> Dict[str, Any]:
 
-        if not path:
-            return {"status": "error", "error": "No file_path provided"}
-
-        if not os.path.isabs(path):
-            path = os.path.abspath(path)
+        if not os.path.exists(path):
+            return {"status": "error", "error": f"File not found: {path}"}
 
         ext = os.path.splitext(path)[1].lower()
 
-        try:
+        if ext == ".java":
+            return Executor._execute_java(path, context)
 
-            # ==========================
-            # JAVA
-            # ==========================
-            if ext == ".java":
+        elif ext == ".py":
+            completed = subprocess.run(
+                ["python", path],
+                capture_output=True,
+                text=True
+            )
+            return {
+                "status": "ok" if completed.returncode == 0 else "error",
+                "stdout": completed.stdout,
+                "stderr": completed.stderr
+            }
 
-                class_name = os.path.splitext(os.path.basename(path))[0]
-                max_retries = 5
-
-                for attempt in range(max_retries):
-
-                    print(f"[COMPILE] Compiling {path} (attempt {attempt + 1})")
-
-                    compile_result = subprocess.run(
-                        ["javac", path],
-                        capture_output=True,
-                        text=True
-                    )
-
-                    if compile_result.returncode == 0:
-                        print("[COMPILE] Success")
-                        break
-
-                    error_msg = compile_result.stderr
-                    print("[COMPILE] Failed:")
-                    print(error_msg)
-
-                    print("[AUTO-FIX] Sending to LLM...")
-                    fixed = Executor._auto_fix_with_llm(
-                        language="java",
-                        file_path=path,
-                        error_msg=error_msg
-                    )
-
-                    if not fixed:
-                        return {
-                            "status": "error",
-                            "error": f"Compilation failed after {attempt + 1} attempts:\n{error_msg}"
-                        }
-
-                    print("[AUTO-FIX] Code updated. Retrying...")
-
-                else:
-                    return {
-                        "status": "error",
-                        "error": f"Compilation failed after {max_retries} attempts"
-                    }
-
-                completed = subprocess.run(
-                    ["java", "-cp", os.path.dirname(path), class_name],
-                    capture_output=True,
-                    text=True,
-                    cwd=os.path.dirname(path)
-                )
-
-                print("\n=== 실행 결과 (Java) ===")
-                print(completed.stdout)
-                if completed.stderr:
-                    print(completed.stderr)
-                print("=" * 30)
-
-                return {
-                    "status": "ok" if completed.returncode == 0 else "error",
-                    "returncode": completed.returncode,
-                    "stdout": completed.stdout,
-                    "stderr": completed.stderr
-                }
-
-            # ==========================
-            # PYTHON
-            # ==========================
-            elif ext == ".py":
-
-                completed = subprocess.run(
-                    ["python", path],
-                    capture_output=True,
-                    text=True
-                )
-
-                return {
-                    "status": "ok" if completed.returncode == 0 else "error",
-                    "returncode": completed.returncode,
-                    "stdout": completed.stdout,
-                    "stderr": completed.stderr
-                }
-
-            else:
-                return {"status": "error", "error": "Unsupported file type"}
-
-        except Exception as e:
-            return {"status": "error", "error": str(e)}
+        return {"status": "error", "error": "Unsupported file type"}
 
     # ==============================
-    # LLM Auto Fix
+    # JAVA EXECUTION LOOP
     # ==============================
 
     @staticmethod
-    def _auto_fix_with_llm(language: str, file_path: str, error_msg: str) -> bool:
+    def _execute_java(path: str, context: Optional[dict]):
 
-        try:
-            with open(file_path, "r", encoding="utf-8") as f:
-                original_code = f.read()
+        workspace_root = os.path.dirname(path)
+        class_name = os.path.splitext(os.path.basename(path))[0]
+        max_retries = 5
 
-            prompt = f"""
-You are a senior {language} developer.
+        if context is None:
+            context = {}
 
-The following file failed to compile.
+        context["workspace"] = workspace_root
+        context["target_file"] = path
 
-=== Error Message ===
-{error_msg}
+        for attempt in range(max_retries):
 
-=== Original Source Code ===
-{original_code}
+            context["iteration"] = attempt + 1
 
-Return the FULL corrected source code.
-Return ONLY valid {language} code.
-Do not include explanations.
-"""
+            print(f"[COMPILE] Attempt {attempt + 1}")
 
-            response = llm_call(
-                prompt=prompt,
-                temperature=0   # 코드 수정은 반드시 0
+            workspace_root = os.path.dirname(path) or "."
+
+            java_files = [
+                f for f in os.listdir(workspace_root)
+                if f.endswith(".java")
+            ]
+
+            compile_cmd = ["javac"] + java_files
+
+            compile_result = subprocess.run(
+                compile_cmd,
+                cwd=workspace_root,
+                capture_output=True,
+                text=True
             )
 
-            fixed_code = Executor._extract_code_block(response)
+            if compile_result.returncode == 0:
+                print("[COMPILE] Success")
+                break
 
-            if not fixed_code.strip():
-                print("[AUTO-FIX] Empty response from LLM")
-                return False
+            error_msg = compile_result.stderr
+            context["last_error"] = error_msg
 
-            with open(file_path, "w", encoding="utf-8") as f:
-                f.write(fixed_code)
+            print("[COMPILE] Failed:")
+            print(error_msg)
 
-            return True
+            print("[AUTO-FIX] Requesting full file rewrite from LLM...")
 
-        except Exception as e:
-            print(f"[AUTO-FIX] LLM fix failed: {e}")
-            return False
+            updated_files = Executor._request_full_rewrite_from_llm(
+                language="java",
+                workspace_root=workspace_root,
+                error_msg=error_msg,
+                context=context
+            )
+
+            if not updated_files:
+                return {"status": "error", "error": "LLM did not return valid files"}
+
+            diff_text = Executor._generate_combined_diff(
+                workspace_root,
+                updated_files
+            )
+
+            Executor._apply_updated_files(workspace_root, updated_files)
+
+        else:
+            return {"status": "error", "error": "Max compile retries reached"}
+
+        run_result = subprocess.run(
+            ["java", "-cp", workspace_root or ".", class_name],
+            capture_output=True,
+            text=True
+        )
+
+        return {
+            "status": "ok" if run_result.returncode == 0 else "error",
+            "stdout": run_result.stdout,
+            "stderr": run_result.stderr
+        }
 
     # ==============================
-    # Code Block Extractor
+    # LLM FULL FILE REQUEST
     # ==============================
 
     @staticmethod
-    def _extract_code_block(text: str) -> str:
-        pattern = r"```(?:\w+)?\s*(.*?)```"
-        match = re.search(pattern, text, re.DOTALL)
-        if match:
-            return match.group(1).strip()
-        return text.strip()
+    def _request_full_rewrite_from_llm(
+        language: str,
+        workspace_root: str,
+        error_msg: str,
+        context: Optional[dict]
+    ) -> Optional[Dict[str, str]]:
+
+        source_files = {}
+
+        for file in os.listdir(workspace_root):
+            if file.endswith(".java"):
+                full_path = os.path.join(workspace_root, file)
+                with open(full_path, "r", encoding="utf-8") as f:
+                    source_files[file] = f.read()
+
+        context_block = Executor._build_context_block(context)
+
+        files_block = ""
+        for name, content in source_files.items():
+            files_block += f"\n=== FILE: {name} ===\n{content}\n"
+
+        prompt = f"""
+You are a senior {language} developer inside an autonomous coding agent.
+
+{context_block}
+
+Compilation failed.
+
+=== ERROR MESSAGE ===
+{error_msg}
+
+Here are all source files:
+
+{files_block}
+
+Fix the issue.
+
+IMPORTANT:
+- Return ONLY corrected files.
+- If multiple files need modification, return all modified files.
+- Use EXACT format:
+
+=== FILE: FileName.java ===
+<full corrected content>
+
+- Do NOT include explanations.
+- Do NOT use markdown.
+"""
+
+        response = llm_call(prompt, temperature=0)
+        response = Executor._ensure_str(response)
+
+        return Executor._parse_multi_file_response(response)
+
+    # ==============================
+    # PARSE MULTI FILE RESPONSE
+    # ==============================
+
+    @staticmethod
+    def _parse_multi_file_response(text: str) -> Optional[Dict[str, str]]:
+
+        if not text:
+            return None
+
+        text = re.sub(r"```.*?\n", "", text)
+        text = text.replace("```", "")
+
+        pattern = r"=== FILE: (.*?) ===\n(.*?)(?=\n=== FILE:|\Z)"
+        matches = re.findall(pattern, text, re.DOTALL)
+
+        if not matches:
+            return None
+
+        files = {}
+        for filename, content in matches:
+            files[filename.strip()] = content.rstrip() + "\n"
+
+        return files
+
+    # ==============================
+    # GENERATE LOCAL DIFF
+    # ==============================
+
+    @staticmethod
+    def _generate_combined_diff(
+        workspace_root: str,
+        updated_files: Dict[str, str]
+    ) -> str:
+
+        combined_diff = ""
+
+        for filename, new_content in updated_files.items():
+
+            full_path = os.path.join(workspace_root, filename)
+
+            if not os.path.exists(full_path):
+                original_content = ""
+            else:
+                with open(full_path, "r", encoding="utf-8") as f:
+                    original_content = f.read()
+
+            diff = difflib.unified_diff(
+                original_content.splitlines(keepends=True),
+                new_content.splitlines(keepends=True),
+                fromfile=f"a/{filename}",
+                tofile=f"b/{filename}",
+            )
+
+            combined_diff += "".join(diff)
+
+        return combined_diff
+
+    # ==============================
+    # APPLY DIFF USING GIT
+    # ==============================
+
+    @staticmethod
+    def _apply_updated_files(workspace_root: str, updated_files: Dict[str, str]):
+
+        for filename, new_content in updated_files.items():
+            full_path = os.path.join(workspace_root, filename)
+
+            print(f"[APPLY] Overwriting {filename}")
+
+            with open(full_path, "w", encoding="utf-8", newline="\n") as f:
+                f.write(new_content)
+    # ==============================
+    # CONTEXT BUILDER
+    # ==============================
+
+    @staticmethod
+    def _build_context_block(context: Optional[dict]) -> str:
+        if not context:
+            return ""
+
+        lines = ["=== AGENT CONTEXT ==="]
+        for k, v in context.items():
+            if v is None:
+                continue
+            if isinstance(v, str) and len(v) > 2000:
+                v = v[-2000:]
+            lines.append(f"{k}: {v}")
+
+        return "\n".join(lines)
+
+    # ==============================
+    # UTIL
+    # ==============================
+
+    @staticmethod
+    def _ensure_str(data):
+        if isinstance(data, bytes):
+            return data.decode("utf-8")
+        return data
