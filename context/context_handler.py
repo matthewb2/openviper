@@ -1,4 +1,5 @@
 from typing import Any
+import os
 
 
 class ContextHandler:
@@ -13,6 +14,30 @@ class ContextHandler:
             "memory": memory.get_all(),
             "files": files
         }
+    
+    @staticmethod
+    def get_current_directory() -> str:
+        """Get current working directory"""
+        return os.getcwd()
+    
+    @staticmethod
+    def list_directory(path: str = ".") -> dict:
+        """List files in a directory"""
+        import os
+        try:
+            items = os.listdir(path)
+            result = []
+            for item in items:
+                full_path = os.path.join(path, item)
+                is_dir = os.path.isdir(full_path)
+                result.append({
+                    "name": item,
+                    "type": "directory" if is_dir else "file",
+                    "path": full_path
+                })
+            return {"success": True, "path": path, "items": result}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
     
     @staticmethod
     def extract_print_source(text: str) -> str | None:

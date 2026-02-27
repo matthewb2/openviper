@@ -1,47 +1,46 @@
+# core/planner.py
+
 import json
+import re
 from agent.config import llm_call
 
 
 class Planner:
 
+    def _clean_json(self, text: str) -> str:
+        text = re.sub(r"```json", "", text)
+        text = re.sub(r"```", "", text)
+        match = re.search(r"\{.*\}", text, re.DOTALL)
+        return match.group(0) if match else text.strip()
+
     def plan(self, goal: str, context: dict) -> dict:
+
         prompt = f"""
-You are a coding agent planner.
-If the user asks to create code, write code, generate a script, or build a program,
-you MUST use action="write_file".
+You are a coding task planner.
 
-You are NOT allowed to respond with action="done"
-unless at least one file operation has already occurred.
+Return STRICT JSON only.
 
-Never finish immediately when the goal involves coding.
+Available actions:
+- write_file
+- create_folder
+
+Rules:
+- DO NOT include source code.
+- DO NOT include explanations.
+- Only return JSON.
+
 GOAL:
 {goal}
 
 CONTEXT:
 {context}
-
-Return STRICT JSON only:
-
-{{
-  "action": "search|edit|read_file|write_file|test|done",
-  "details": {{
-    "file_path": "",
-    "query": "",
-    "instruction": ""
-  }}
-}}
 """
 
-        raw = llm_call(prompt)
+        raw = llm_call(prompt, temperature=0)
+        cleaned = self._clean_json(raw)
 
         try:
-            parsed = json.loads(raw)
-            if "action" not in parsed:
-                raise ValueError("Invalid schema")
+            parsed = json.loads(cleaned)
             return parsed
         except Exception:
-            # fallback 안전 처리
-            return {
-                "action": "done",
-                "details": {}
-            }
+            raise RuntimeError(f"Planner JSON invalid:\n{raw}")

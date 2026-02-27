@@ -78,10 +78,7 @@ def main():
             
             result = agent.run(goal)
             
-            print(f"\n결과: {result}")
-            print(f"반복 횟수: {result.get('iterations', 'N/A')}")
-            print("-" * 40)
-            print()
+            print(result)
     
     elif args.goal:
         print(f"작업 시작: {normalized_goal}")
