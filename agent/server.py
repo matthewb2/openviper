@@ -20,7 +20,7 @@ class MoveFileRequest(BaseModel):
 # 작업 루트 디렉토리
 app = FastAPI()
 
-WORKSPACE = Path("D:/openviper/agent/workspace")  # 실제 작업 폴더
+WORKSPACE = Path("D:/openviper/workspace")  # 실제 작업 폴더
 
 
 

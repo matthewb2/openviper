@@ -78,6 +78,36 @@
           "project_name": "sum"
         }
       }
+    },
+    {
+      "timestamp": "2026-02-28T23:00:43.829970",
+      "input": "test 프로젝트를 만드세요\n",
+      "plan": {
+        "action": "create_project",
+        "parameters": {
+          "project_name": "test"
+        }
+      }
+    },
+    {
+      "timestamp": "2026-02-28T23:03:30.149319",
+      "input": "1",
+      "plan": {
+        "action": "create_project",
+        "parameters": {
+          "project_name": "default_project"
+        }
+      }
+    },
+    {
+      "timestamp": "2026-02-28T23:06:46.024183",
+      "input": "test2 프로젝트를 만들어주세요\n",
+      "plan": {
+        "action": "create_project",
+        "parameters": {
+          "project_name": "test2"
+        }
+      }
     }
   ],
   "errors": []

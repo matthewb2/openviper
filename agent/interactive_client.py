@@ -10,7 +10,7 @@ import json
 # 프로젝트 루트 추가
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from memory.core import Memory
+from context.memory import Memory
 
 memory = Memory()
 
@@ -167,7 +167,7 @@ def call_mcp(action, params):
 # ==============================
 
 def read_multiline_input(prompt=">>> "):
-    print(prompt + "(여러 줄 입력 가능, 빈 줄 두 번 입력 시 종료)")
+    print(prompt + "(줄바꿈 가능, 엔터 두 번 시 입력 종료)")
     
     lines = []
     empty_count = 0
